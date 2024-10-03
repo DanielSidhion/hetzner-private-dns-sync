@@ -49,6 +49,10 @@ struct Args {
     /// DNS zone name.
     #[arg(long)]
     zone_name: String,
+
+    /// If the private network name changes between invocations, this software will remove all DNS entries it previously created to clean up its state, and then start with a new state for the new network name. This flag indicates an acknowledgement of this behaviour. If not passed (or false), the software will exit with an error instead of cleaning things up.
+    #[arg(long)]
+    allow_private_network_change: bool,
 }
 
 #[derive(Debug)]
@@ -112,7 +116,7 @@ struct State {
     servers_synced: Vec<Server>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 struct Server {
     id: i64,
     ip_address: String,
@@ -156,17 +160,39 @@ impl DnsUpdaterWrapper {
     async fn add_server(&self, server: &Server) -> anyhow::Result<()> {
         tracing::debug!("Creating a DNS record for a server.");
 
-        self.client
+        let server_fqdn = format!("{}.{}", server.hostname, self.zone_name);
+        let server_ip_parsed = server.ip_address.parse()?;
+
+        match self
+            .client
             .create(
-                format!("{}.{}", server.hostname, self.zone_name),
+                &server_fqdn,
                 dns_update::DnsRecord::A {
-                    content: server.ip_address.parse()?,
+                    content: server_ip_parsed,
                 },
                 600,
                 &self.zone_name,
             )
             .await
-            .map_err(|e| anyhow!("failed to create a DNS record. {}", e))?;
+        {
+            Ok(v) => Ok(v),
+            Err(dns_update::Error::Response(resp_text)) => {
+                tracing::warn!(resp_text, "Received a response error when trying to create a DNS record. We'll assume we got that because the record already exists, and will update it instead.");
+
+                self.client
+                    .update(
+                        &server_fqdn,
+                        dns_update::DnsRecord::A {
+                            content: server_ip_parsed,
+                        },
+                        600,
+                        &self.zone_name,
+                    )
+                    .await
+                    .map_err(|e| anyhow!("failed to update a DNS record. {}", e))
+            }
+            Err(e) => Err(anyhow!("failed to create a DNS record. {}", e)),
+        }?;
 
         Ok(())
     }
@@ -293,9 +319,35 @@ async fn main() -> anyhow::Result<()> {
         args.zone_name,
     )?;
     tracing::info!("DNS Updater initialised.");
-    let mut hcloud = HCloudWrapper::new(args.hcloud_api_token, args.private_network_name);
+    let mut hcloud = HCloudWrapper::new(args.hcloud_api_token, args.private_network_name.clone());
     let mut current_state = StateWrapper::from_directory(args.state_directory)?;
     tracing::info!("Current state retrieved.");
+
+    if current_state.private_network_name != args.private_network_name {
+        if !current_state.servers_synced.is_empty() {
+            if !args.allow_private_network_change {
+                return Err(anyhow!("The private network name has changed, but the --allow-private-network-change flag was false! We'll exit with an error instead. If you expect the private network name to change and acknolwedge the behaviour of this software when that happens, pass the --allow-private-network-change flag to continue."));
+            }
+
+            tracing::warn!("The private network name has changed and we got the flag acknowledging we'll clean up the state. Will do that now.");
+            for server_info in current_state.servers_synced.clone() {
+                tracing::debug!(?server_info, "Removing record for server.");
+                dns_updater.remove_server(&server_info).await?;
+                current_state
+                    .servers_synced
+                    .retain(|s| s.id != server_info.id);
+                current_state.save()?;
+            }
+
+            // We removed all the previous servers, so we can switch the private network name now.
+            current_state.private_network_name = args.private_network_name;
+            current_state.save()?;
+        } else {
+            // We're in a new state, so we'll populate the network name.
+            current_state.private_network_name = args.private_network_name;
+            current_state.save()?;
+        }
+    }
 
     let server_ids_from_state: HashSet<i64> =
         current_state.servers_synced.iter().map(|s| s.id).collect();
