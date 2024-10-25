@@ -45,14 +45,11 @@
       packages.x86_64-linux = {
         default = pkgs.rustPlatform.buildRustPackage {
           pname = "hetzner-private-dns-sync";
-          version = "0.1.0";
+          version = "0.1.1";
 
           src = ./hetzner-private-dns-sync;
           cargoLock = {
             lockFile = ./hetzner-private-dns-sync/Cargo.lock;
-            outputHashes = {
-              "hcloud-0.20.0" = "sha256-d47CTCPd+rNczyPp3aJ7NFuqN2X1SWlsVRoVVNX5Aqs=";
-            };
           };
           buildType = "debug";
 

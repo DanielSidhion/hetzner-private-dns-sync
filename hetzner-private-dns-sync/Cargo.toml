@@ -1,6 +1,6 @@
 [package]
 name = "hetzner-private-dns-sync"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [dependencies]
@@ -13,6 +13,3 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-
-[patch.crates-io]
-hcloud = { git = 'https://github.com/DanielSidhion/hcloud-rust.git', branch = 'fix-rustls' }
